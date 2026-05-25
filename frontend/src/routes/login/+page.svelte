@@ -42,7 +42,8 @@
 </script>
 
 <div class="login-bg">
-  <div class="login-card">
+  <div class="login-content">
+    <div class="login-card">
 
     <!-- Brand -->
     <div class="brand">
@@ -122,6 +123,11 @@
       {/if}
     </div>
 
+    </div>
+  </div>
+
+  <div class="disclaimer">
+    This app is not officially affiliated with Sterling Bank of Asia and is only a mockup for educational purposes.
   </div>
 </div>
 
@@ -130,9 +136,16 @@
     min-height: 100vh;
     background: var(--bg);
     display: flex;
+    flex-direction: column;
+    padding: 2rem;
+  }
+
+  .login-content {
+    flex: 1;
+    display: flex;
     align-items: center;
     justify-content: center;
-    padding: 2rem;
+    width: 100%;
   }
 
   .login-card {
@@ -220,5 +233,13 @@
     color: var(--text-3);
     text-align: center;
     line-height: 1.6;
+  }
+
+  .disclaimer {
+    margin-top: 1.5rem;
+    padding: 0 1rem 0.75rem;
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--text-3);
   }
 </style>
