@@ -83,12 +83,12 @@ Enter your MySQL root password when prompted.
  
 ### 1.4 Import the main schema
 ```cmd
-mysql -u root -p -P 3000 < "C:\Users\juliu\Downloads\Sterling Bank of Asia Avance\backend\Schemas\Loan_Schema.sql"
+mysql -u root -p -P 3000 < "C:\Users\username\Downloads\Sterling Bank of Asia Avance\backend\Schemas\Loan_Schema.sql"
 ```
  
 ### 1.5 Import the users table
 ```cmd
-mysql -u root -p -P 3000 < "C:\Users\juliu\Downloads\Sterling Bank of Asia Avance\backend\Schemas\add_users_table.sql"
+mysql -u root -p -P 3000 < "C:\Users\username\Downloads\Sterling Bank of Asia Avance\backend\Schemas\add_users_table.sql"
 ```
  
 ### 1.6 Verify the data loaded
@@ -105,7 +105,7 @@ You should see 5 tables and 4 user accounts.
  
 ### 2.1 Install dependencies
 ```powershell
-cd "C:\Users\juliu\Downloads\Sterling Bank of Asia Avance\backend"
+cd "C:\Users\username\Downloads\Sterling Bank of Asia Avance\backend"
 bun install
 ```
  
@@ -143,7 +143,7 @@ Open these URLs in your browser:
 ### 3.1 Install dependencies
 Open a **new terminal** (keep the backend terminal open):
 ```powershell
-cd "C:\Users\juliu\Downloads\Sterling Bank of Asia Avance\frontend"
+cd "C:\Users\username\Downloads\Sterling Bank of Asia Avance\frontend"
 bun install
 ```
  
