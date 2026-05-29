@@ -9,10 +9,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── DB Connection Pool ──────────────────────────────────────────────
+// ── DB Pool ──────────────────────────────────────────────────────────
 const pool = mysql.createPool({
   host:     process.env.DB_HOST     || 'localhost',
-  port:     Number(process.env.DB_PORT) || 3000,
+  port:     Number(process.env.DB_PORT) || 3306,
   user:     process.env.DB_USER     || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME     || 'LoanDB',
@@ -20,24 +20,21 @@ const pool = mysql.createPool({
   connectionLimit: 10,
 });
 
-// ── Health check ────────────────────────────────────────────────────
+// ── Health ───────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
-// ── AUTH ─────────────────────────────────────────────────────────────
+// ── Auth ─────────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) {
+  if (!username || !password)
     return res.status(400).json({ message: 'Username and password are required.' });
-  }
   try {
     const [rows]: any = await pool.query(
       'SELECT * FROM Users WHERE Username = ? AND Password = ?',
       [username, password]
     );
     const user = rows[0];
-    if (!user) {
-      return res.status(401).json({ message: 'Incorrect username or password.' });
-    }
+    if (!user) return res.status(401).json({ message: 'Incorrect username or password.' });
     res.json({
       userID:        user.UserID,
       username:      user.Username,
@@ -50,10 +47,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// ── Stats ────────────────────────────────────────────────────────────
+// ── Stats ─────────────────────────────────────────────────────────────
 app.get('/api/stats', async (_, res) => {
   try {
-    const [[row]]: any = await pool.query(`
+    const [rows]: any = await pool.query(`
       SELECT
         COUNT(*)                     AS total,
         SUM(LoanAmount)              AS totalLoan,
@@ -61,13 +58,13 @@ app.get('/api/stats', async (_, res) => {
         SUM(ApplicationType = 'Old') AS oldApps
       FROM Application
     `);
-    res.json(row);
+    res.json(rows[0]);
   } catch (e: any) {
     res.status(500).json({ message: e.message });
   }
 });
 
-// ── GET all applications ─────────────────────────────────────────────
+// ── GET all applications ──────────────────────────────────────────────
 app.get('/api/applications', async (_, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM Application ORDER BY DateApplication DESC');
@@ -77,97 +74,109 @@ app.get('/api/applications', async (_, res) => {
   }
 });
 
-// ── GET single application (with all related data) ───────────────────
+// ── GET single application (all related data) ─────────────────────────
 app.get('/api/applications/:id', async (req, res) => {
-  const { id } = req.params;
+  const id = Number(req.params.id);
   try {
-    const [[app]]: any      = await pool.query('SELECT * FROM Application WHERE ApplicationID = ?', [id]);
-    if (!app) return res.status(404).json({ message: 'Application not found' });
+    const [apps]: any      = await pool.query('SELECT * FROM Application WHERE ApplicationID = ?', [id]);
+    if (!apps[0]) return res.status(404).json({ message: 'Application not found' });
 
     const [idNumbers]: any  = await pool.query('SELECT * FROM IDNumbers   WHERE ApplicationID = ?', [id]);
-    const [[employee]]: any = await pool.query('SELECT * FROM Employee    WHERE ApplicationID = ?', [id]);
+    const [employees]: any  = await pool.query('SELECT * FROM Employee    WHERE ApplicationID = ?', [id]);
     const [references]: any = await pool.query('SELECT * FROM `Reference` WHERE ApplicationID = ?', [id]);
     const [dependents]: any = await pool.query('SELECT * FROM Dependent   WHERE ApplicationID = ?', [id]);
 
-    res.json({ ...app, idNumbers, employee: employee ?? null, references, dependents });
+    res.json({
+      ...apps[0],
+      idNumbers,
+      employee:   employees[0] ?? null,
+      references,
+      dependents,
+    });
   } catch (e: any) {
     res.status(500).json({ message: e.message });
   }
 });
 
-// ── POST create application ──────────────────────────────────────────
+// ── POST create application ───────────────────────────────────────────
 app.post('/api/applications', async (req, res) => {
   const { application, idNumbers, employee, references, dependents } = req.body;
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
 
-    await conn.query(`
+    // Insert application — let DB generate the ID
+    const [result]: any = await conn.query(`
       INSERT INTO Application
-        (ApplicationID, DateApplication, ApplicationType, LoanAmount, LoanTerm,
-         FullName, BirthDate, Citizenship, Gender, TIN, SSS_GSIS,
+        (DateApplication, ApplicationType, LoanAmount, LoanTerm,
+         FullName, BirthDate, Age, Citizenship, Gender, TIN, SSS_GSIS,
          MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd,
          EmploymentStatus, EmploymentYearsStay, PositionTitle, Country, ZipCode, BusinessPhoneNo)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
-        application.ApplicationID, application.DateApplication, application.ApplicationType,
-        application.LoanAmount,    application.LoanTerm,        application.FullName,
-        application.BirthDate,     application.Citizenship,     application.Gender,
-        application.TIN,           application.SSS_GSIS,        application.MobileNo,
-        application.EmailAddress,  application.EmployerBusinessName, application.EmployerBusinessAdd,
-        application.EmploymentStatus, application.EmploymentYearsStay, application.PositionTitle,
-        application.Country, application.ZipCode, application.BusinessPhoneNo,
+        application.DateApplication, application.ApplicationType,
+        application.LoanAmount,      application.LoanTerm,
+        application.FullName,        application.BirthDate,
+        application.Age ?? null,     application.Citizenship,
+        application.Gender,          application.TIN,
+        application.SSS_GSIS,        application.MobileNo,
+        application.EmailAddress,    application.EmployerBusinessName,
+        application.EmployerBusinessAdd, application.EmploymentStatus,
+        application.EmploymentYearsStay, application.PositionTitle,
+        application.Country,         application.ZipCode,
+        application.BusinessPhoneNo,
       ]
     );
 
+    const newID = result.insertId;
+
     for (const id of idNumbers ?? []) {
-      await conn.query('INSERT INTO IDNumbers (ApplicationID, IDNumber) VALUES (?,?)',
-        [application.ApplicationID, id.IDNumber]);
+      await conn.query('INSERT INTO IDNumbers (ApplicationID, IDNumber) VALUES (?,?)', [newID, id.IDNumber]);
     }
 
-    if (employee?.EmployeeID) {
+    if (employee) {
       await conn.query(`
         INSERT INTO Employee
-          (EmployeeID, ApplicationID, DateHired, DateRegularized, BasicIncome,
+          (ApplicationID, DateHired, DateRegularized, BasicIncome,
            FixedAllowances, LessDeductions, NetPay, AveOTCommissions, NetTakeHomePay)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        [employee.EmployeeID, application.ApplicationID, employee.DateHired,
-         employee.DateRegularized, employee.BasicIncome, employee.FixedAllowances,
-         employee.LessDeductions, employee.NetPay, employee.AveOTCommissions, employee.NetTakeHomePay]
+        VALUES (?,?,?,?,?,?,?,?,?)`,
+        [newID, employee.DateHired, employee.DateRegularized,
+         employee.BasicIncome, employee.FixedAllowances, employee.LessDeductions,
+         employee.NetPay, employee.AveOTCommissions, employee.NetTakeHomePay]
       );
     }
 
     for (const ref of references ?? []) {
       await conn.query(`
         INSERT INTO \`Reference\`
-          (ReferenceID, ApplicationID, ReferenceFullName, ReferencesRS, ReferencePhoneNo, ReferenceEmail)
-        VALUES (?,?,?,?,?,?)`,
-        [ref.ReferenceID, application.ApplicationID, ref.ReferenceFullName,
-         ref.ReferencesRS, ref.ReferencePhoneNo, ref.ReferenceEmail]
+          (ApplicationID, ReferenceFullName, ReferencesRS, ReferencePhoneNo, ReferenceEmail)
+        VALUES (?,?,?,?,?)`,
+        [newID, ref.ReferenceFullName, ref.ReferencesRS, ref.ReferencePhoneNo, ref.ReferenceEmail]
       );
     }
 
     for (const dep of dependents ?? []) {
       await conn.query(`
-        INSERT INTO Dependent (DependentID, ApplicationID, DependentsName, TotalNoDependents)
-        VALUES (?,?,?,?)`,
-        [dep.DependentID, application.ApplicationID, dep.DependentsName, dep.TotalNoDependents]
+        INSERT INTO Dependent (ApplicationID, DependentsName, TotalNoDependents)
+        VALUES (?,?,?)`,
+        [newID, dep.DependentsName, dep.TotalNoDependents]
       );
     }
 
     await conn.commit();
-    res.status(201).json({ message: 'Application created', id: application.ApplicationID });
+    res.status(201).json({ message: 'Application created', id: newID });
   } catch (e: any) {
     await conn.rollback();
+    console.error('Create error:', e);
     res.status(500).json({ message: e.message });
   } finally {
     conn.release();
   }
 });
 
-// ── PUT update application ───────────────────────────────────────────
+// ── PUT update application ────────────────────────────────────────────
 app.put('/api/applications/:id', async (req, res) => {
-  const { id } = req.params;
+  const id = Number(req.params.id);
   const { application, idNumbers, employee, references, dependents } = req.body;
   const conn = await pool.getConnection();
   try {
@@ -176,60 +185,76 @@ app.put('/api/applications/:id', async (req, res) => {
     await conn.query(`
       UPDATE Application SET
         DateApplication=?, ApplicationType=?, LoanAmount=?, LoanTerm=?,
-        FullName=?, BirthDate=?, Citizenship=?, Gender=?, TIN=?, SSS_GSIS=?,
+        FullName=?, BirthDate=?, Age=?, Citizenship=?, Gender=?, TIN=?, SSS_GSIS=?,
         MobileNo=?, EmailAddress=?, EmployerBusinessName=?, EmployerBusinessAdd=?,
         EmploymentStatus=?, EmploymentYearsStay=?, PositionTitle=?, Country=?,
         ZipCode=?, BusinessPhoneNo=?
       WHERE ApplicationID=?`,
       [
-        application.DateApplication, application.ApplicationType, application.LoanAmount,
-        application.LoanTerm,        application.FullName,        application.BirthDate,
-        application.Citizenship,     application.Gender,          application.TIN,
-        application.SSS_GSIS,        application.MobileNo,        application.EmailAddress,
-        application.EmployerBusinessName, application.EmployerBusinessAdd,
-        application.EmploymentStatus, application.EmploymentYearsStay, application.PositionTitle,
-        application.Country, application.ZipCode, application.BusinessPhoneNo, id,
+        application.DateApplication, application.ApplicationType,
+        application.LoanAmount,      application.LoanTerm,
+        application.FullName,        application.BirthDate,
+        application.Age ?? null,     application.Citizenship,
+        application.Gender,          application.TIN,
+        application.SSS_GSIS,        application.MobileNo,
+        application.EmailAddress,    application.EmployerBusinessName,
+        application.EmployerBusinessAdd, application.EmploymentStatus,
+        application.EmploymentYearsStay, application.PositionTitle,
+        application.Country,         application.ZipCode,
+        application.BusinessPhoneNo, id,
       ]
     );
 
+    // Replace ID numbers
     await conn.query('DELETE FROM IDNumbers WHERE ApplicationID=?', [id]);
     for (const n of idNumbers ?? []) {
       await conn.query('INSERT INTO IDNumbers (ApplicationID, IDNumber) VALUES (?,?)', [id, n.IDNumber]);
     }
 
-    if (employee?.EmployeeID) {
-      await conn.query(`
-        INSERT INTO Employee
-          (EmployeeID, ApplicationID, DateHired, DateRegularized, BasicIncome,
-           FixedAllowances, LessDeductions, NetPay, AveOTCommissions, NetTakeHomePay)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-        ON DUPLICATE KEY UPDATE
-          DateHired=VALUES(DateHired), DateRegularized=VALUES(DateRegularized),
-          BasicIncome=VALUES(BasicIncome), FixedAllowances=VALUES(FixedAllowances),
-          LessDeductions=VALUES(LessDeductions), NetPay=VALUES(NetPay),
-          AveOTCommissions=VALUES(AveOTCommissions), NetTakeHomePay=VALUES(NetTakeHomePay)`,
-        [employee.EmployeeID, id, employee.DateHired, employee.DateRegularized,
-         employee.BasicIncome, employee.FixedAllowances, employee.LessDeductions,
-         employee.NetPay, employee.AveOTCommissions, employee.NetTakeHomePay]
-      );
+    // Upsert employee
+    if (employee) {
+      const [existing]: any = await conn.query('SELECT EmployeeID FROM Employee WHERE ApplicationID=?', [id]);
+      if (existing[0]) {
+        await conn.query(`
+          UPDATE Employee SET
+            DateHired=?, DateRegularized=?, BasicIncome=?, FixedAllowances=?,
+            LessDeductions=?, NetPay=?, AveOTCommissions=?, NetTakeHomePay=?
+          WHERE ApplicationID=?`,
+          [employee.DateHired, employee.DateRegularized, employee.BasicIncome,
+           employee.FixedAllowances, employee.LessDeductions, employee.NetPay,
+           employee.AveOTCommissions, employee.NetTakeHomePay, id]
+        );
+      } else {
+        await conn.query(`
+          INSERT INTO Employee
+            (ApplicationID, DateHired, DateRegularized, BasicIncome,
+             FixedAllowances, LessDeductions, NetPay, AveOTCommissions, NetTakeHomePay)
+          VALUES (?,?,?,?,?,?,?,?,?)`,
+          [id, employee.DateHired, employee.DateRegularized, employee.BasicIncome,
+           employee.FixedAllowances, employee.LessDeductions, employee.NetPay,
+           employee.AveOTCommissions, employee.NetTakeHomePay]
+        );
+      }
     }
 
+    // Replace references
     await conn.query('DELETE FROM `Reference` WHERE ApplicationID=?', [id]);
     for (const ref of references ?? []) {
       await conn.query(`
         INSERT INTO \`Reference\`
-          (ReferenceID, ApplicationID, ReferenceFullName, ReferencesRS, ReferencePhoneNo, ReferenceEmail)
-        VALUES (?,?,?,?,?,?)`,
-        [ref.ReferenceID, id, ref.ReferenceFullName, ref.ReferencesRS, ref.ReferencePhoneNo, ref.ReferenceEmail]
+          (ApplicationID, ReferenceFullName, ReferencesRS, ReferencePhoneNo, ReferenceEmail)
+        VALUES (?,?,?,?,?)`,
+        [id, ref.ReferenceFullName, ref.ReferencesRS, ref.ReferencePhoneNo, ref.ReferenceEmail]
       );
     }
 
+    // Replace dependents
     await conn.query('DELETE FROM Dependent WHERE ApplicationID=?', [id]);
     for (const dep of dependents ?? []) {
       await conn.query(`
-        INSERT INTO Dependent (DependentID, ApplicationID, DependentsName, TotalNoDependents)
-        VALUES (?,?,?,?)`,
-        [dep.DependentID, id, dep.DependentsName, dep.TotalNoDependents]
+        INSERT INTO Dependent (ApplicationID, DependentsName, TotalNoDependents)
+        VALUES (?,?,?)`,
+        [id, dep.DependentsName, dep.TotalNoDependents]
       );
     }
 
@@ -237,15 +262,16 @@ app.put('/api/applications/:id', async (req, res) => {
     res.json({ message: 'Application updated' });
   } catch (e: any) {
     await conn.rollback();
+    console.error('Update error:', e);
     res.status(500).json({ message: e.message });
   } finally {
     conn.release();
   }
 });
 
-// ── DELETE application ───────────────────────────────────────────────
+// ── DELETE application ────────────────────────────────────────────────
 app.delete('/api/applications/:id', async (req, res) => {
-  const { id } = req.params;
+  const id = Number(req.params.id);
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -264,6 +290,6 @@ app.delete('/api/applications/:id', async (req, res) => {
   }
 });
 
-// ── Start ────────────────────────────────────────────────────────────
-const PORT = process.env.PORT || 3000;
+// ── Start ─────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
