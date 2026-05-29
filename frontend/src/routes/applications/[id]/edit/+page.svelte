@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { getApplication, updateApplication } from '$lib/api';
+  import { auth } from '$lib/auth';
   import { goto } from '$app/navigation';
 
   const id = page.params.id!;
@@ -10,6 +12,7 @@
   let error = $state('');
   let step = $state(1);
   const totalSteps = 4;
+  const minReferences = 3;
 
   // Step 1
   let DateApplication = $state('');
@@ -20,6 +23,7 @@
   // Step 2
   let FullName = $state('');
   let BirthDate = $state('');
+  const Age = $derived(BirthDate ? calcAge(BirthDate) : null);
   let Citizenship = $state('');
   let Gender = $state('M');
   let TIN = $state('');
@@ -51,7 +55,34 @@
   let references = $state<any[]>([]);
   let dependents = $state<any[]>([]);
 
+  function calcAge(isoDate: string) {
+    const birth = new Date(isoDate);
+    if (Number.isNaN(birth.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+    return age;
+  }
+
+  function isBlank(value: any) {
+    return value === undefined || value === null || String(value).trim() === '';
+  }
+
+  function isPositiveNumber(value: any) {
+    return !Number.isNaN(Number(value)) && Number(value) > 0;
+  }
+
+  function ensureMinReferences(list: any[]) {
+    if (list.length >= minReferences) return list;
+    const missing = minReferences - list.length;
+    return [...list, ...Array.from({ length: missing }, () => ({ ReferenceID: '', ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' }))];
+  }
+
   onMount(async () => {
+    auth.init();
+    if (!get(auth.isLoggedIn)) { goto('/login'); return; }
+    if (!get(auth.isAdmin))    { goto('/my-application'); return; }
     try {
       const app = await getApplication(id);
       // Populate step 1
@@ -90,7 +121,7 @@
         NetTakeHomePay   = app.employee.NetTakeHomePay;
       }
       // Populate step 4
-      references = app.references?.length ? app.references : [{ ReferenceID: '', ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' }];
+      references = ensureMinReferences(app.references?.length ? app.references : []);
       dependents = app.dependents?.length ? app.dependents : [{ DependentID: '', DependentsName: '' }];
     } catch (e: any) {
       error = e.message;
@@ -103,7 +134,7 @@
   function prev() { if (step > 1) step--; }
 
   function addRef()            { references = [...references, { ReferenceID: '', ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' }]; }
-  function removeRef(i: number){ references = references.filter((_, idx) => idx !== i); }
+  function removeRef(i: number){ if (references.length > minReferences) references = references.filter((_, idx) => idx !== i); }
   function addDep()            { dependents = [...dependents, { DependentID: '', DependentsName: '' }]; }
   function removeDep(i: number){ dependents = dependents.filter((_, idx) => idx !== i); }
   function addID()             { idNumbers  = [...idNumbers, '']; }
@@ -113,11 +144,35 @@
     submitting = true;
     error = '';
     try {
+      const requiredFields = [
+        DateApplication, ApplicationType, LoanAmount, LoanTerm,
+        FullName, BirthDate, Citizenship, Gender, TIN, SSS_GSIS,
+        MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd,
+        EmploymentStatus, EmploymentYearsStay, PositionTitle, Country,
+        ZipCode, BusinessPhoneNo, EmployeeID, DateHired, DateRegularized,
+        BasicIncome, FixedAllowances, LessDeductions, NetPay, AveOTCommissions,
+        NetTakeHomePay,
+      ];
+      if (requiredFields.some(isBlank)) {
+        error = 'Please complete all required fields before saving.';
+        submitting = false;
+        return;
+      }
+      if (!isPositiveNumber(LoanAmount) || !isPositiveNumber(LoanTerm) || !isPositiveNumber(EmploymentYearsStay)) {
+        error = 'Loan amount, loan term, and years with employer must be valid numbers.';
+        submitting = false;
+        return;
+      }
+      if (!references.length || references.length < minReferences) {
+        error = `Please provide at least ${minReferences} complete references.`;
+        submitting = false;
+        return;
+      }
       await updateApplication(id, {
-        application: { DateApplication, ApplicationType, LoanAmount: Number(LoanAmount), LoanTerm, FullName, BirthDate, Citizenship, Gender, TIN, SSS_GSIS, MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd, EmploymentStatus, EmploymentYearsStay: Number(EmploymentYearsStay), PositionTitle, Country, ZipCode, BusinessPhoneNo },
+        application: { DateApplication, ApplicationType, LoanAmount: Number(LoanAmount), LoanTerm, FullName, BirthDate, Age: Age ?? null, Citizenship, Gender, TIN, SSS_GSIS, MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd, EmploymentStatus, EmploymentYearsStay: Number(EmploymentYearsStay), PositionTitle, Country, ZipCode, BusinessPhoneNo },
         idNumbers:   idNumbers.filter(Boolean).map(n => ({ IDNumber: n })),
         employee:    { EmployeeID, DateHired, DateRegularized, BasicIncome: Number(BasicIncome), FixedAllowances: Number(FixedAllowances), LessDeductions: Number(LessDeductions), NetPay: Number(NetPay), AveOTCommissions: Number(AveOTCommissions), NetTakeHomePay: Number(NetTakeHomePay) },
-        references:  references.filter(r => r.ReferenceFullName),
+        references:  references.filter(r => r.ReferenceFullName && r.ReferencesRS && r.ReferencePhoneNo && r.ReferenceEmail),
         dependents:  dependents.filter(d => d.DependentsName).map(d => ({ ...d, TotalNoDependents: dependents.filter(x => x.DependentsName).length })),
       });
       goto(`/applications/${id}`);
@@ -160,11 +215,11 @@
     <div class="grid-3">
       <div class="field">
         <label>Date Filed</label>
-        <input type="date" bind:value={DateApplication} />
+        <input type="date" bind:value={DateApplication} required />
       </div>
       <div class="field">
         <label>Application Type</label>
-        <select bind:value={ApplicationType}>
+        <select bind:value={ApplicationType} required>
           <option value="New">New</option>
           <option value="Old">Old (Renewal)</option>
         </select>
@@ -173,11 +228,11 @@
     <div class="grid-2">
       <div class="field">
         <label>Loan Amount (₱)</label>
-        <input type="number" bind:value={LoanAmount} />
+        <input type="number" bind:value={LoanAmount} required />
       </div>
       <div class="field">
         <label>Loan Term (years)</label>
-        <input type="number" bind:value={LoanTerm} />
+        <input type="number" bind:value={LoanTerm} required />
       </div>
     </div>
   {/if}
@@ -186,20 +241,21 @@
   {#if step === 2}
     <div class="section-label">Personal Information</div>
     <div class="grid-2">
-      <div class="field"><label>Full Name</label><input bind:value={FullName} /></div>
-      <div class="field"><label>Birth Date</label><input type="date" bind:value={BirthDate} /></div>
-      <div class="field"><label>Citizenship</label><input bind:value={Citizenship} /></div>
+      <div class="field"><label>Full Name</label><input bind:value={FullName} required /></div>
+      <div class="field"><label>Birth Date</label><input type="date" bind:value={BirthDate} required /></div>
+      <div class="field"><label>Age</label><input type="number" value={Age ?? ''} readonly /></div>
+      <div class="field"><label>Citizenship</label><input bind:value={Citizenship} required /></div>
       <div class="field">
         <label>Gender</label>
-        <select bind:value={Gender}>
+        <select bind:value={Gender} required>
           <option value="M">Male</option>
           <option value="F">Female</option>
         </select>
       </div>
-      <div class="field"><label>TIN</label><input bind:value={TIN} /></div>
-      <div class="field"><label>SSS / GSIS</label><input bind:value={SSS_GSIS} /></div>
-      <div class="field"><label>Mobile</label><input bind:value={MobileNo} /></div>
-      <div class="field"><label>Email</label><input type="email" bind:value={EmailAddress} /></div>
+      <div class="field"><label>TIN</label><input bind:value={TIN} required /></div>
+      <div class="field"><label>SSS / GSIS</label><input bind:value={SSS_GSIS} required /></div>
+      <div class="field"><label>Mobile</label><input bind:value={MobileNo} required /></div>
+      <div class="field"><label>Email</label><input type="email" bind:value={EmailAddress} required /></div>
     </div>
     <hr class="divider" />
     <div class="section-label">
@@ -208,7 +264,7 @@
     </div>
     {#each idNumbers as _, i}
       <div class="dynamic-row">
-        <input placeholder="ID Number" bind:value={idNumbers[i]} />
+        <input placeholder="ID Number" bind:value={idNumbers[i]} required />
         {#if idNumbers.length > 1}
           <button class="remove-btn" on:click={() => removeID(i)}>✕</button>
         {/if}
@@ -220,37 +276,37 @@
   {#if step === 3}
     <div class="section-label">Employment Details</div>
     <div class="grid-2">
-      <div class="field"><label>Employer Name</label><input bind:value={EmployerBusinessName} /></div>
-      <div class="field"><label>Business Phone</label><input bind:value={BusinessPhoneNo} /></div>
+      <div class="field"><label>Employer Name</label><input bind:value={EmployerBusinessName} required /></div>
+      <div class="field"><label>Business Phone</label><input bind:value={BusinessPhoneNo} required /></div>
     </div>
-    <div class="field"><label>Employer Address</label><input bind:value={EmployerBusinessAdd} /></div>
+    <div class="field"><label>Employer Address</label><input bind:value={EmployerBusinessAdd} required /></div>
     <div class="grid-3">
       <div class="field">
         <label>Employment Status</label>
-        <select bind:value={EmploymentStatus}>
+        <select bind:value={EmploymentStatus} required>
           <option value="Regular">Regular</option>
           <option value="Contractual">Contractual</option>
           <option value="Probationary">Probationary</option>
           <option value="Self-employed">Self-employed</option>
         </select>
       </div>
-      <div class="field"><label>Years with Employer</label><input type="number" bind:value={EmploymentYearsStay} /></div>
-      <div class="field"><label>Position / Title</label><input bind:value={PositionTitle} /></div>
-      <div class="field"><label>Country</label><input bind:value={Country} /></div>
-      <div class="field"><label>Zip Code</label><input bind:value={ZipCode} /></div>
+      <div class="field"><label>Years with Employer</label><input type="number" bind:value={EmploymentYearsStay} required /></div>
+      <div class="field"><label>Position / Title</label><input bind:value={PositionTitle} required /></div>
+      <div class="field"><label>Country</label><input bind:value={Country} required /></div>
+      <div class="field"><label>Zip Code</label><input bind:value={ZipCode} required /></div>
     </div>
     <hr class="divider" />
     <div class="section-label">Payroll Information</div>
     <div class="grid-2">
-      <div class="field"><label>Employee ID</label><input bind:value={EmployeeID} /></div>
-      <div class="field"><label>Date Hired</label><input type="date" bind:value={DateHired} /></div>
-      <div class="field"><label>Date Regularized</label><input type="date" bind:value={DateRegularized} /></div>
-      <div class="field"><label>Basic Income (₱)</label><input type="number" bind:value={BasicIncome} /></div>
-      <div class="field"><label>Fixed Allowances (₱)</label><input type="number" bind:value={FixedAllowances} /></div>
-      <div class="field"><label>Deductions (₱)</label><input type="number" bind:value={LessDeductions} /></div>
-      <div class="field"><label>Net Pay (₱)</label><input type="number" bind:value={NetPay} /></div>
-      <div class="field"><label>Avg OT / Commissions (₱)</label><input type="number" bind:value={AveOTCommissions} /></div>
-      <div class="field"><label>Net Take-Home Pay (₱)</label><input type="number" bind:value={NetTakeHomePay} /></div>
+      <div class="field"><label>Employee ID</label><input bind:value={EmployeeID} required /></div>
+      <div class="field"><label>Date Hired</label><input type="date" bind:value={DateHired} required /></div>
+      <div class="field"><label>Date Regularized</label><input type="date" bind:value={DateRegularized} required /></div>
+      <div class="field"><label>Basic Income (₱)</label><input type="number" bind:value={BasicIncome} required /></div>
+      <div class="field"><label>Fixed Allowances (₱)</label><input type="number" bind:value={FixedAllowances} required /></div>
+      <div class="field"><label>Deductions (₱)</label><input type="number" bind:value={LessDeductions} required /></div>
+      <div class="field"><label>Net Pay (₱)</label><input type="number" bind:value={NetPay} required /></div>
+      <div class="field"><label>Avg OT / Commissions (₱)</label><input type="number" bind:value={AveOTCommissions} required /></div>
+      <div class="field"><label>Net Take-Home Pay (₱)</label><input type="number" bind:value={NetTakeHomePay} required /></div>
     </div>
   {/if}
 
@@ -264,16 +320,16 @@
       <div class="sub-card">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
           <span style="font-size:0.82rem; font-weight:500; color:var(--text-2)">Reference {i + 1}</span>
-          {#if references.length > 1}
+          {#if references.length > minReferences}
             <button class="remove-btn" on:click={() => removeRef(i)}>Remove</button>
           {/if}
         </div>
         <div class="grid-2">
-          <div class="field"><label>Reference ID</label><input bind:value={ref.ReferenceID} /></div>
-          <div class="field"><label>Full Name</label><input bind:value={ref.ReferenceFullName} /></div>
-          <div class="field"><label>Relationship</label><input bind:value={ref.ReferencesRS} /></div>
-          <div class="field"><label>Phone</label><input bind:value={ref.ReferencePhoneNo} /></div>
-          <div class="field"><label>Email</label><input type="email" bind:value={ref.ReferenceEmail} /></div>
+          <div class="field"><label>Reference ID</label><input bind:value={ref.ReferenceID} required /></div>
+          <div class="field"><label>Full Name</label><input bind:value={ref.ReferenceFullName} required /></div>
+          <div class="field"><label>Relationship</label><input bind:value={ref.ReferencesRS} required /></div>
+          <div class="field"><label>Phone</label><input bind:value={ref.ReferencePhoneNo} required /></div>
+          <div class="field"><label>Email</label><input type="email" bind:value={ref.ReferenceEmail} required /></div>
         </div>
       </div>
     {/each}
@@ -292,8 +348,8 @@
           {/if}
         </div>
         <div class="grid-2">
-          <div class="field"><label>Dependent ID</label><input bind:value={dep.DependentID} /></div>
-          <div class="field"><label>Full Name</label><input bind:value={dep.DependentsName} /></div>
+          <div class="field"><label>Dependent ID</label><input bind:value={dep.DependentID} required /></div>
+          <div class="field"><label>Full Name</label><input bind:value={dep.DependentsName} required /></div>
         </div>
       </div>
     {/each}

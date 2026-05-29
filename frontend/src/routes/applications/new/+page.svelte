@@ -1,11 +1,16 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { createApplication } from '$lib/api';
+  import { auth } from '$lib/auth';
   import { goto } from '$app/navigation';
 
   let step = $state(1);
   const totalSteps = 4;
   let submitting = $state(false);
   let error = $state('');
+
+  const minReferences = 3;
 
   // Step 1
   let DateApplication  = $state(new Date().toISOString().split('T')[0]);
@@ -16,6 +21,7 @@
   // Step 2
   let FullName         = $state('');
   let BirthDate        = $state('');
+  const Age            = $derived(BirthDate ? calcAge(BirthDate) : null);
   let Citizenship      = $state('Filipino');
   let Gender           = $state('M');
   let TIN              = $state('');
@@ -43,11 +49,11 @@
   let NetTakeHomePay     = $state('');
 
   // Step 4
-  let references  = $state([{ ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' }]);
+  let references  = $state(Array.from({ length: minReferences }, () => ({ ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' })));
   let dependents  = $state([{ DependentsName: '' }]);
 
   function addRef()            { references = [...references, { ReferenceFullName: '', ReferencesRS: '', ReferencePhoneNo: '', ReferenceEmail: '' }]; }
-  function removeRef(i: number){ references = references.filter((_, idx) => idx !== i); }
+  function removeRef(i: number){ if (references.length > minReferences) references = references.filter((_, idx) => idx !== i); }
   function addDep()            { dependents = [...dependents, { DependentsName: '' }]; }
   function removeDep(i: number){ dependents = dependents.filter((_, idx) => idx !== i); }
   function addID()             { idNumbers  = [...idNumbers, '']; }
@@ -55,15 +61,86 @@
   function next() { if (step < totalSteps) step++; }
   function prev() { if (step > 1) step--; }
 
+  let hasExistingApplication = $state(false);
+
+  onMount(() => {
+    auth.init();
+    if (!get(auth.isLoggedIn)) { goto('/login'); return; }
+    const user = get(auth.user);
+    hasExistingApplication = Boolean(user?.applicationID);
+  });
+
+  function calcAge(isoDate: string) {
+    const birth = new Date(isoDate);
+    if (Number.isNaN(birth.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - birth.getFullYear();
+    const m = today.getMonth() - birth.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+    return age;
+  }
+
+  function hasMissingReference(ref: any) {
+    return !ref?.ReferenceFullName || !ref?.ReferencesRS || !ref?.ReferencePhoneNo || !ref?.ReferenceEmail;
+  }
+
+  function isBlank(value: any) {
+    return value === undefined || value === null || String(value).trim() === '';
+  }
+
+  function isPositiveNumber(value: any) {
+    return !Number.isNaN(Number(value)) && Number(value) > 0;
+  }
+
+  function validateBeforeSubmit() {
+    if (ApplicationType === 'New' && hasExistingApplication) {
+      error = 'You cannot apply for a new loan while you have an existing unpaid loan.';
+      return false;
+    }
+    const requiredFields = [
+      DateApplication, ApplicationType, LoanAmount, LoanTerm,
+      FullName, BirthDate, Citizenship, Gender, TIN, SSS_GSIS,
+      MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd,
+      EmploymentStatus, EmploymentYearsStay, PositionTitle, Country,
+      ZipCode, BusinessPhoneNo, DateHired, DateRegularized, BasicIncome,
+      FixedAllowances, LessDeductions, NetPay, AveOTCommissions, NetTakeHomePay,
+    ];
+    if (requiredFields.some(isBlank)) {
+      error = 'Please complete all required fields before submitting.';
+      return false;
+    }
+    if (!isPositiveNumber(LoanAmount) || !isPositiveNumber(LoanTerm) || !isPositiveNumber(EmploymentYearsStay)) {
+      error = 'Loan amount, loan term, and years with employer must be valid numbers.';
+      return false;
+    }
+    const filledReferences = references.filter((ref) => ref.ReferenceFullName || ref.ReferencesRS || ref.ReferencePhoneNo || ref.ReferenceEmail);
+    if (filledReferences.length < minReferences || filledReferences.some(hasMissingReference)) {
+      error = `Please provide at least ${minReferences} complete references.`;
+      return false;
+    }
+    if (!idNumbers.some(Boolean)) {
+      error = 'Please provide at least one ID number.';
+      return false;
+    }
+    if (!dependents.some((d) => d.DependentsName)) {
+      error = 'Please provide at least one dependent.';
+      return false;
+    }
+    return true;
+  }
+
   async function submit() {
     submitting = true;
     error = '';
     try {
+      if (!validateBeforeSubmit()) { submitting = false; return; }
+      const user = get(auth.user);
       await createApplication({
-        application: { DateApplication, ApplicationType, LoanAmount: Number(LoanAmount), LoanTerm, FullName, BirthDate, Citizenship, Gender, TIN, SSS_GSIS, MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd, EmploymentStatus, EmploymentYearsStay: Number(EmploymentYearsStay), PositionTitle, Country, ZipCode, BusinessPhoneNo },
+        userID: user?.userID ?? null,
+        application: { DateApplication, ApplicationType, LoanAmount: Number(LoanAmount), LoanTerm, FullName, BirthDate, Age: Age ?? null, Citizenship, Gender, TIN, SSS_GSIS, MobileNo, EmailAddress, EmployerBusinessName, EmployerBusinessAdd, EmploymentStatus, EmploymentYearsStay: Number(EmploymentYearsStay), PositionTitle, Country, ZipCode, BusinessPhoneNo },
         idNumbers:  idNumbers.filter(Boolean).map(n => ({ IDNumber: n })),
         employee:   { DateHired, DateRegularized, BasicIncome: Number(BasicIncome), FixedAllowances: Number(FixedAllowances), LessDeductions: Number(LessDeductions), NetPay: Number(NetPay), AveOTCommissions: Number(AveOTCommissions), NetTakeHomePay: Number(NetTakeHomePay) },
-        references: references.filter(r => r.ReferenceFullName),
+        references: references.filter(r => r.ReferenceFullName && r.ReferencesRS && r.ReferencePhoneNo && r.ReferenceEmail),
         dependents: dependents.filter(d => d.DependentsName).map(d => ({ ...d, TotalNoDependents: dependents.filter(x => x.DependentsName).length })),
       });
       goto('/applications');
@@ -101,11 +178,11 @@
     <div class="grid-3">
       <div class="field">
         <label for="date">Date Filed</label>
-        <input id="date" type="date" bind:value={DateApplication} />
+        <input id="date" type="date" bind:value={DateApplication} required />
       </div>
       <div class="field">
         <label for="apptype">Application Type</label>
-        <select id="apptype" bind:value={ApplicationType}>
+        <select id="apptype" bind:value={ApplicationType} required>
           <option value="New">New</option>
           <option value="Old">Old (Renewal)</option>
         </select>
@@ -114,11 +191,11 @@
     <div class="grid-2">
       <div class="field">
         <label for="amount">Loan Amount (₱)</label>
-        <input id="amount" type="number" placeholder="50000" bind:value={LoanAmount} />
+        <input id="amount" type="number" placeholder="50000" bind:value={LoanAmount} required />
       </div>
       <div class="field">
         <label for="term">Loan Term (years)</label>
-        <input id="term" type="number" placeholder="5" bind:value={LoanTerm} />
+        <input id="term" type="number" placeholder="5" bind:value={LoanTerm} required />
       </div>
     </div>
   {/if}
@@ -126,20 +203,21 @@
   {#if step === 2}
     <div class="section-label">Personal Information</div>
     <div class="grid-2">
-      <div class="field"><label for="fname">Full Name</label><input id="fname" placeholder="Juan Dela Cruz" bind:value={FullName} /></div>
-      <div class="field"><label for="bdate">Birth Date</label><input id="bdate" type="date" bind:value={BirthDate} /></div>
-      <div class="field"><label for="cit">Citizenship</label><input id="cit" placeholder="Filipino" bind:value={Citizenship} /></div>
+      <div class="field"><label for="fname">Full Name</label><input id="fname" placeholder="Juan Dela Cruz" bind:value={FullName} required /></div>
+      <div class="field"><label for="bdate">Birth Date</label><input id="bdate" type="date" bind:value={BirthDate} required /></div>
+      <div class="field"><label for="age">Age</label><input id="age" type="number" value={Age ?? ''} readonly /></div>
+      <div class="field"><label for="cit">Citizenship</label><input id="cit" placeholder="Filipino" bind:value={Citizenship} required /></div>
       <div class="field">
         <label for="gender">Gender</label>
-        <select id="gender" bind:value={Gender}>
+        <select id="gender" bind:value={Gender} required>
           <option value="M">Male</option>
           <option value="F">Female</option>
         </select>
       </div>
-      <div class="field"><label for="tin">TIN</label><input id="tin" placeholder="123456789" bind:value={TIN} /></div>
-      <div class="field"><label for="sss">SSS / GSIS</label><input id="sss" placeholder="1234567890" bind:value={SSS_GSIS} /></div>
-      <div class="field"><label for="mobile">Mobile</label><input id="mobile" placeholder="09XXXXXXXXX" bind:value={MobileNo} /></div>
-      <div class="field"><label for="email">Email</label><input id="email" type="email" placeholder="email@example.com" bind:value={EmailAddress} /></div>
+      <div class="field"><label for="tin">TIN</label><input id="tin" placeholder="123456789" bind:value={TIN} required /></div>
+      <div class="field"><label for="sss">SSS / GSIS</label><input id="sss" placeholder="1234567890" bind:value={SSS_GSIS} required /></div>
+      <div class="field"><label for="mobile">Mobile</label><input id="mobile" placeholder="09XXXXXXXXX" bind:value={MobileNo} required /></div>
+      <div class="field"><label for="email">Email</label><input id="email" type="email" placeholder="email@example.com" bind:value={EmailAddress} required /></div>
     </div>
     <hr class="divider" />
     <div class="section-label">
@@ -148,7 +226,7 @@
     </div>
     {#each idNumbers as _, i}
       <div class="dynamic-row">
-        <input placeholder="ID Number" bind:value={idNumbers[i]} />
+        <input placeholder="ID Number" bind:value={idNumbers[i]} required />
         {#if idNumbers.length > 1}
           <button class="remove-btn" onclick={() => removeID(i)}>✕</button>
         {/if}
@@ -159,36 +237,36 @@
   {#if step === 3}
     <div class="section-label">Employment Details</div>
     <div class="grid-2">
-      <div class="field"><label for="employer">Employer Name</label><input id="employer" placeholder="ABC Company" bind:value={EmployerBusinessName} /></div>
-      <div class="field"><label for="bizphone">Business Phone</label><input id="bizphone" placeholder="09XXXXXXXXX" bind:value={BusinessPhoneNo} /></div>
+      <div class="field"><label for="employer">Employer Name</label><input id="employer" placeholder="ABC Company" bind:value={EmployerBusinessName} required /></div>
+      <div class="field"><label for="bizphone">Business Phone</label><input id="bizphone" placeholder="09XXXXXXXXX" bind:value={BusinessPhoneNo} required /></div>
     </div>
-    <div class="field"><label for="bizadd">Employer Address</label><input id="bizadd" placeholder="123 Street, City" bind:value={EmployerBusinessAdd} /></div>
+    <div class="field"><label for="bizadd">Employer Address</label><input id="bizadd" placeholder="123 Street, City" bind:value={EmployerBusinessAdd} required /></div>
     <div class="grid-3">
       <div class="field">
         <label for="empstatus">Employment Status</label>
-        <select id="empstatus" bind:value={EmploymentStatus}>
+        <select id="empstatus" bind:value={EmploymentStatus} required>
           <option value="Regular">Regular</option>
           <option value="Contractual">Contractual</option>
           <option value="Probationary">Probationary</option>
           <option value="Self-employed">Self-employed</option>
         </select>
       </div>
-      <div class="field"><label for="yrs">Years with Employer</label><input id="yrs" type="number" placeholder="3" bind:value={EmploymentYearsStay} /></div>
-      <div class="field"><label for="pos">Position / Title</label><input id="pos" placeholder="Software Engineer" bind:value={PositionTitle} /></div>
-      <div class="field"><label for="country">Country</label><input id="country" placeholder="Philippines" bind:value={Country} /></div>
-      <div class="field"><label for="zip">Zip Code</label><input id="zip" placeholder="1000" bind:value={ZipCode} /></div>
+      <div class="field"><label for="yrs">Years with Employer</label><input id="yrs" type="number" placeholder="3" bind:value={EmploymentYearsStay} required /></div>
+      <div class="field"><label for="pos">Position / Title</label><input id="pos" placeholder="Software Engineer" bind:value={PositionTitle} required /></div>
+      <div class="field"><label for="country">Country</label><input id="country" placeholder="Philippines" bind:value={Country} required /></div>
+      <div class="field"><label for="zip">Zip Code</label><input id="zip" placeholder="1000" bind:value={ZipCode} required /></div>
     </div>
     <hr class="divider" />
     <div class="section-label">Payroll Information</div>
     <div class="grid-2">
-      <div class="field"><label for="hired">Date Hired</label><input id="hired" type="date" bind:value={DateHired} /></div>
-      <div class="field"><label for="reg">Date Regularized</label><input id="reg" type="date" bind:value={DateRegularized} /></div>
-      <div class="field"><label for="basic">Basic Income (₱)</label><input id="basic" type="number" placeholder="25000" bind:value={BasicIncome} /></div>
-      <div class="field"><label for="allow">Fixed Allowances (₱)</label><input id="allow" type="number" placeholder="5000" bind:value={FixedAllowances} /></div>
-      <div class="field"><label for="ded">Deductions (₱)</label><input id="ded" type="number" placeholder="3000" bind:value={LessDeductions} /></div>
-      <div class="field"><label for="netpay">Net Pay (₱)</label><input id="netpay" type="number" placeholder="27000" bind:value={NetPay} /></div>
-      <div class="field"><label for="ot">Avg OT / Commissions (₱)</label><input id="ot" type="number" placeholder="2000" bind:value={AveOTCommissions} /></div>
-      <div class="field"><label for="takehome">Net Take-Home Pay (₱)</label><input id="takehome" type="number" placeholder="29000" bind:value={NetTakeHomePay} /></div>
+      <div class="field"><label for="hired">Date Hired</label><input id="hired" type="date" bind:value={DateHired} required /></div>
+      <div class="field"><label for="reg">Date Regularized</label><input id="reg" type="date" bind:value={DateRegularized} required /></div>
+      <div class="field"><label for="basic">Basic Income (₱)</label><input id="basic" type="number" placeholder="25000" bind:value={BasicIncome} required /></div>
+      <div class="field"><label for="allow">Fixed Allowances (₱)</label><input id="allow" type="number" placeholder="5000" bind:value={FixedAllowances} required /></div>
+      <div class="field"><label for="ded">Deductions (₱)</label><input id="ded" type="number" placeholder="3000" bind:value={LessDeductions} required /></div>
+      <div class="field"><label for="netpay">Net Pay (₱)</label><input id="netpay" type="number" placeholder="27000" bind:value={NetPay} required /></div>
+      <div class="field"><label for="ot">Avg OT / Commissions (₱)</label><input id="ot" type="number" placeholder="2000" bind:value={AveOTCommissions} required /></div>
+      <div class="field"><label for="takehome">Net Take-Home Pay (₱)</label><input id="takehome" type="number" placeholder="29000" bind:value={NetTakeHomePay} required /></div>
     </div>
   {/if}
 
@@ -201,15 +279,15 @@
       <div class="sub-card">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.75rem;">
           <span style="font-size:0.82rem; font-weight:500; color:var(--text-2)">Reference {i + 1}</span>
-          {#if references.length > 1}
+          {#if references.length > minReferences}
             <button class="remove-btn" onclick={() => removeRef(i)}>Remove</button>
           {/if}
         </div>
         <div class="grid-2">
-          <div class="field"><label for="rname{i}">Full Name</label><input id="rname{i}" placeholder="Name" bind:value={ref.ReferenceFullName} /></div>
-          <div class="field"><label for="rrs{i}">Relationship</label><input id="rrs{i}" placeholder="Boss / Colleague / Friend" bind:value={ref.ReferencesRS} /></div>
-          <div class="field"><label for="rphone{i}">Phone</label><input id="rphone{i}" placeholder="09XXXXXXXXX" bind:value={ref.ReferencePhoneNo} /></div>
-          <div class="field"><label for="remail{i}">Email</label><input id="remail{i}" type="email" placeholder="ref@email.com" bind:value={ref.ReferenceEmail} /></div>
+          <div class="field"><label for="rname{i}">Full Name</label><input id="rname{i}" placeholder="Name" bind:value={ref.ReferenceFullName} required /></div>
+          <div class="field"><label for="rrs{i}">Relationship</label><input id="rrs{i}" placeholder="Boss / Colleague / Friend" bind:value={ref.ReferencesRS} required /></div>
+          <div class="field"><label for="rphone{i}">Phone</label><input id="rphone{i}" placeholder="09XXXXXXXXX" bind:value={ref.ReferencePhoneNo} required /></div>
+          <div class="field"><label for="remail{i}">Email</label><input id="remail{i}" type="email" placeholder="ref@email.com" bind:value={ref.ReferenceEmail} required /></div>
         </div>
       </div>
     {/each}
@@ -226,7 +304,7 @@
             <button class="remove-btn" onclick={() => removeDep(i)}>Remove</button>
           {/if}
         </div>
-        <div class="field"><label for="dname{i}">Full Name</label><input id="dname{i}" placeholder="Name" bind:value={dep.DependentsName} /></div>
+        <div class="field"><label for="dname{i}">Full Name</label><input id="dname{i}" placeholder="Name" bind:value={dep.DependentsName} required /></div>
       </div>
     {/each}
   {/if}

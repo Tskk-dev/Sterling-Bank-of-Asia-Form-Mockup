@@ -1,9 +1,24 @@
 // src/lib/api.ts
 const BASE = 'http://localhost:3001/api';
 
+function getAuthHeaders() {
+  if (typeof localStorage === 'undefined') return {};
+  const stored = localStorage.getItem('loandb_user');
+  if (!stored) return {};
+  try {
+    const user = JSON.parse(stored);
+    return {
+      'x-user-id': String(user?.userID ?? ''),
+      'x-user-role': String(user?.role ?? ''),
+    };
+  } catch {
+    return {};
+  }
+}
+
 async function req(path: string, opts: RequestInit = {}) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeaders(), ...opts.headers },
     ...opts,
   });
   if (!res.ok) {

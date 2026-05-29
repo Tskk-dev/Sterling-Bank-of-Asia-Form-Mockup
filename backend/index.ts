@@ -20,6 +20,28 @@ const pool = mysql.createPool({
   connectionLimit: 10,
 });
 
+function isBlank(value: any) {
+  return value === undefined || value === null || String(value).trim() === '';
+}
+
+function missingFields(obj: any, fields: string[]) {
+  return fields.filter((field) => isBlank(obj?.[field]));
+}
+
+function isValidNumber(value: any) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function getAuth(req: express.Request) {
+  const roleHeader = String(req.headers['x-user-role'] ?? '').toLowerCase();
+  const idHeader = String(req.headers['x-user-id'] ?? '').trim();
+  const userID = idHeader ? Number(idHeader) : null;
+  return {
+    role: roleHeader || null,
+    userID: Number.isFinite(userID) ? userID : null,
+  };
+}
+
 // ── Health ───────────────────────────────────────────────────────────
 app.get('/api/health', (_, res) => res.json({ ok: true }));
 
@@ -48,7 +70,9 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ── Stats ─────────────────────────────────────────────────────────────
-app.get('/api/stats', async (_, res) => {
+app.get('/api/stats', async (req, res) => {
+  const auth = getAuth(req);
+  if (auth.role !== 'admin') return res.status(403).json({ message: 'Admin access required.' });
   try {
     const [rows]: any = await pool.query(`
       SELECT
@@ -65,7 +89,9 @@ app.get('/api/stats', async (_, res) => {
 });
 
 // ── GET all applications ──────────────────────────────────────────────
-app.get('/api/applications', async (_, res) => {
+app.get('/api/applications', async (req, res) => {
+  const auth = getAuth(req);
+  if (auth.role !== 'admin') return res.status(403).json({ message: 'Admin access required.' });
   try {
     const [rows] = await pool.query('SELECT * FROM Application ORDER BY DateApplication DESC');
     res.json(rows);
@@ -76,8 +102,17 @@ app.get('/api/applications', async (_, res) => {
 
 // ── GET single application (all related data) ─────────────────────────
 app.get('/api/applications/:id', async (req, res) => {
+  const auth = getAuth(req);
   const id = Number(req.params.id);
+  if (!auth.role) return res.status(401).json({ message: 'Not authenticated.' });
   try {
+    if (auth.role !== 'admin') {
+      if (!auth.userID) return res.status(403).json({ message: 'User access required.' });
+      const [users]: any = await pool.query('SELECT ApplicationID FROM Users WHERE UserID = ?', [auth.userID]);
+      if (!users[0] || Number(users[0].ApplicationID) !== id) {
+        return res.status(403).json({ message: 'You can only access your own application.' });
+      }
+    }
     const [apps]: any      = await pool.query('SELECT * FROM Application WHERE ApplicationID = ?', [id]);
     if (!apps[0]) return res.status(404).json({ message: 'Application not found' });
 
@@ -100,10 +135,65 @@ app.get('/api/applications/:id', async (req, res) => {
 
 // ── POST create application ───────────────────────────────────────────
 app.post('/api/applications', async (req, res) => {
-  const { application, idNumbers, employee, references, dependents } = req.body;
+  const auth = getAuth(req);
+  if (!auth.role) return res.status(401).json({ message: 'Not authenticated.' });
+  const { application, idNumbers, employee, references, dependents, userID } = req.body;
+  if (auth.role !== 'admin') {
+    if (!auth.userID || Number(userID) !== auth.userID) {
+      return res.status(403).json({ message: 'You can only submit your own application.' });
+    }
+  }
+  const requiredApplicationFields = [
+    'DateApplication', 'ApplicationType', 'LoanAmount', 'LoanTerm',
+    'FullName', 'BirthDate', 'Citizenship', 'Gender', 'TIN', 'SSS_GSIS',
+    'MobileNo', 'EmailAddress', 'EmployerBusinessName', 'EmployerBusinessAdd',
+    'EmploymentStatus', 'EmploymentYearsStay', 'PositionTitle', 'Country',
+    'ZipCode', 'BusinessPhoneNo',
+  ];
+  const missing = missingFields(application, requiredApplicationFields);
+  if (missing.length) {
+    return res.status(400).json({ message: `Missing required application fields: ${missing.join(', ')}` });
+  }
+  if (!isValidNumber(application.LoanAmount) || application.LoanAmount <= 0) {
+    return res.status(400).json({ message: 'LoanAmount must be a valid number.' });
+  }
+  if (!Array.isArray(idNumbers) || idNumbers.filter((n: any) => !isBlank(n?.IDNumber)).length === 0) {
+    return res.status(400).json({ message: 'At least one ID number is required.' });
+  }
+  if (!employee) {
+    return res.status(400).json({ message: 'Employee payroll details are required.' });
+  }
+  const missingEmployee = missingFields(employee, [
+    'DateHired', 'DateRegularized', 'BasicIncome', 'FixedAllowances',
+    'LessDeductions', 'NetPay', 'AveOTCommissions', 'NetTakeHomePay',
+  ]);
+  if (missingEmployee.length) {
+    return res.status(400).json({ message: `Missing required payroll fields: ${missingEmployee.join(', ')}` });
+  }
+  if (!Array.isArray(references) || references.length < 3) {
+    return res.status(400).json({ message: 'At least three references are required.' });
+  }
+  if (references.some((ref: any) => missingFields(ref, ['ReferenceFullName', 'ReferencesRS', 'ReferencePhoneNo', 'ReferenceEmail']).length)) {
+    return res.status(400).json({ message: 'Each reference must include full name, relationship, phone, and email.' });
+  }
+  if (!Array.isArray(dependents) || dependents.filter((d: any) => !isBlank(d?.DependentsName)).length === 0) {
+    return res.status(400).json({ message: 'At least one dependent is required.' });
+  }
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    if (userID) {
+      const [users]: any = await conn.query('SELECT ApplicationID FROM Users WHERE UserID = ?', [userID]);
+      if (!users[0]) {
+        await conn.rollback();
+        return res.status(400).json({ message: 'User account not found for this application.' });
+      }
+      if (application.ApplicationType === 'New' && users[0].ApplicationID) {
+        await conn.rollback();
+        return res.status(409).json({ message: 'Borrower has an existing unpaid loan and cannot apply for a new one.' });
+      }
+    }
 
     // Insert application — let DB generate the ID
     const [result]: any = await conn.query(`
@@ -163,6 +253,10 @@ app.post('/api/applications', async (req, res) => {
       );
     }
 
+    if (userID) {
+      await conn.query('UPDATE Users SET ApplicationID=? WHERE UserID=?', [newID, userID]);
+    }
+
     await conn.commit();
     res.status(201).json({ message: 'Application created', id: newID });
   } catch (e: any) {
@@ -176,8 +270,46 @@ app.post('/api/applications', async (req, res) => {
 
 // ── PUT update application ────────────────────────────────────────────
 app.put('/api/applications/:id', async (req, res) => {
+  const auth = getAuth(req);
+  if (auth.role !== 'admin') return res.status(403).json({ message: 'Admin access required.' });
   const id = Number(req.params.id);
   const { application, idNumbers, employee, references, dependents } = req.body;
+  const requiredApplicationFields = [
+    'DateApplication', 'ApplicationType', 'LoanAmount', 'LoanTerm',
+    'FullName', 'BirthDate', 'Citizenship', 'Gender', 'TIN', 'SSS_GSIS',
+    'MobileNo', 'EmailAddress', 'EmployerBusinessName', 'EmployerBusinessAdd',
+    'EmploymentStatus', 'EmploymentYearsStay', 'PositionTitle', 'Country',
+    'ZipCode', 'BusinessPhoneNo',
+  ];
+  const missing = missingFields(application, requiredApplicationFields);
+  if (missing.length) {
+    return res.status(400).json({ message: `Missing required application fields: ${missing.join(', ')}` });
+  }
+  if (!isValidNumber(application.LoanAmount) || application.LoanAmount <= 0) {
+    return res.status(400).json({ message: 'LoanAmount must be a valid number.' });
+  }
+  if (!Array.isArray(idNumbers) || idNumbers.filter((n: any) => !isBlank(n?.IDNumber)).length === 0) {
+    return res.status(400).json({ message: 'At least one ID number is required.' });
+  }
+  if (!employee) {
+    return res.status(400).json({ message: 'Employee payroll details are required.' });
+  }
+  const missingEmployee = missingFields(employee, [
+    'DateHired', 'DateRegularized', 'BasicIncome', 'FixedAllowances',
+    'LessDeductions', 'NetPay', 'AveOTCommissions', 'NetTakeHomePay',
+  ]);
+  if (missingEmployee.length) {
+    return res.status(400).json({ message: `Missing required payroll fields: ${missingEmployee.join(', ')}` });
+  }
+  if (!Array.isArray(references) || references.length < 3) {
+    return res.status(400).json({ message: 'At least three references are required.' });
+  }
+  if (references.some((ref: any) => missingFields(ref, ['ReferenceFullName', 'ReferencesRS', 'ReferencePhoneNo', 'ReferenceEmail']).length)) {
+    return res.status(400).json({ message: 'Each reference must include full name, relationship, phone, and email.' });
+  }
+  if (!Array.isArray(dependents) || dependents.filter((d: any) => !isBlank(d?.DependentsName)).length === 0) {
+    return res.status(400).json({ message: 'At least one dependent is required.' });
+  }
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -271,6 +403,8 @@ app.put('/api/applications/:id', async (req, res) => {
 
 // ── DELETE application ────────────────────────────────────────────────
 app.delete('/api/applications/:id', async (req, res) => {
+  const auth = getAuth(req);
+  if (auth.role !== 'admin') return res.status(403).json({ message: 'Admin access required.' });
   const id = Number(req.params.id);
   const conn = await pool.getConnection();
   try {

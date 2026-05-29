@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { getApplications, deleteApplication } from '$lib/api';
+  import { auth } from '$lib/auth';
+  import { goto } from '$app/navigation';
 
   let applications = $state<any[]>([]);
   let loading = $state(true);
@@ -9,6 +12,9 @@
   let typeFilter = $state('All');
 
   onMount(async () => {
+    auth.init();
+    if (!get(auth.isLoggedIn)) { goto('/login'); return; }
+    if (!get(auth.isAdmin))    { goto('/my-application'); return; }
     try {
       applications = await getApplications();
     } catch (e: any) {

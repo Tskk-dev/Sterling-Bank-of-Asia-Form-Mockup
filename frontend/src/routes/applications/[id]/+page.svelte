@@ -1,7 +1,9 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { getApplication, deleteApplication } from '$lib/api';
+  import { auth } from '$lib/auth';
   import { goto } from '$app/navigation';
 
   const id = page.params.id!;
@@ -10,6 +12,9 @@
   let error = $state('');
 
   onMount(async () => {
+    auth.init();
+    if (!get(auth.isLoggedIn)) { goto('/login'); return; }
+    if (!get(auth.isAdmin))    { goto('/my-application'); return; }
     try {
       app = await getApplication(id);
     } catch (e: any) {

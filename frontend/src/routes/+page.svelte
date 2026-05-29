@@ -2,8 +2,8 @@
   import { onMount } from 'svelte';
   import { getApplications } from '$lib/api';
   import { auth } from '$lib/auth';
-  import { goto } from '$app/navigation';
   import { get } from 'svelte/store';
+  import { goto } from '$app/navigation';
 
   let applications = $state<any[]>([]);
   let loading = $state(true);
